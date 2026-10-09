@@ -971,5 +971,133 @@ makeIcon();
 if(!FORM)initPdf();
 render();
 </script>
+ <script>
+/* ===== GitHub-Anbindung (Zusatz) ===== */
+function ghCfg(){try{return JSON.parse(localStorage.getItem('dp_gh')||'{}')||{};}catch(e){return {};}}
+function ghSet(k,v){
+  v=String(v||'').trim();
+  if(k==='repo')v=v.replace(/^https?:\/\/github\.com\//,'').replace(/\.git$/,'').replace(/\/+$/,'');
+  const c=ghCfg();c[k]=v;
+  try{localStorage.setItem('dp_gh',JSON.stringify(c));}catch(e){}
+  render();
+}
+function ghH(token){return {'Authorization':'Bearer '+token,'Accept':'application/vnd.github+json','Content-Type':'application/json','X-GitHub-Api-Version':'2022-11-28'};}
+
+/* Planer: Meldungen abholen */
+async function ghFetch(){
+  const c=ghCfg();
+  if(!c.repo||!c.token){alert('Bitte zuerst Repository und Token eintragen.');return;}
+  try{
+    const r=await fetch('https://api.github.com/repos/'+c.repo+'/issues?state=open&per_page=100',{headers:ghH(c.token)});
+    if(!r.ok){
+      alert(r.status===401||r.status===403?'GitHub lehnt den Token ab (Status '+r.status+'). Ist er abgelaufen oder fehlt die Berechtigung „Issues: Read and write“?'
+        :r.status===404?'Repository nicht gefunden (Status 404). Stimmen Name und Token-Zugriff?'
+        :'GitHub meldet einen Fehler (Status '+r.status+').');
+      return;
+    }
+    const list=(await r.json()).filter(i=>!i.pull_request&&/^abwesenheit/i.test(i.title||''));
+    const rows=[],nums=[];
+    list.forEach(i=>{const p=parseAbwText(i.body||'');if(p.length){rows.push(...p);nums.push(i.number);}});
+    if(!rows.length){alert('Keine neuen Meldungen gefunden.');return;}
+    ui.abwImp=rows;ui.abwIssues=nums;render();
+  }catch(e){alert('Keine Verbindung zu GitHub.');}
+}
+async function ghClose(nums){
+  const c=ghCfg();let ok=0;
+  for(const n of nums){
+    try{
+      const r=await fetch('https://api.github.com/repos/'+c.repo+'/issues/'+n,{method:'PATCH',headers:ghH(c.token),body:JSON.stringify({state:'closed',state_reason:'completed'})});
+      if(r.ok)ok++;
+    }catch(e){}
+  }
+  return ok;
+}
+function abwCheck(){
+  ui.abwIssues=null;
+  const rows=parseAbwText($('abwTxt').value);
+  if(!rows.length){alert('Keine gültigen Zeilen gefunden. Erwartet: Name | von | bis | Notiz (Datum z. B. 08.11.2026).');return;}
+  ui.abwImp=rows;render();
+}
+async function abwApply(){
+  let n=0,dup=0;
+  ui.abwImp.filter(r=>r.on&&r.pid&&r.von).forEach(r=>{
+    const bis=r.bis<r.von?r.von:r.bis;
+    if(S.absences.some(a=>a.personId===r.pid&&a.von===r.von&&a.bis===bis)){dup++;return;}
+    S.absences.push({id:uid(),personId:r.pid,von:r.von,bis,note:r.note,src:''});n++;
+  });
+  const nums=ui.abwIssues||[];
+  ui.abwImp=null;ui.abwIssues=null;save();render();
+  const msg=n+' Abwesenheiten übernommen'+(dup?' ('+dup+' waren schon vorhanden).':'.');
+  if(nums.length&&confirm(msg+'\n\nDie '+nums.length+' abgeholten Meldungen bei GitHub jetzt als erledigt schließen?')){
+    const ok=await ghClose(nums);alert(ok+' von '+nums.length+' Meldungen geschlossen.');
+  }else alert(msg);
+}
+function vGh(){
+  const c=ghCfg(),on=!!(c.repo&&c.ftoken);
+  return `<div class="card"><h2>Meldungen über GitHub</h2>
+    <p class="hint">Das Formular legt jede Meldung in einem <b>privaten</b> GitHub-Repository ab. Du holst sie hier ab, prüfst sie wie gewohnt und übernimmst sie. Diese Einstellungen bleiben auf diesem Gerät und sind nicht in der Sicherung enthalten.</p>
+    <div class="row"><label>Repository <input value="${esc(c.repo||'')}" placeholder="benutzername/dienstplaner-daten" onchange="ghSet('repo',this.value)"></label>
+    <label>Token zum Abholen <input type="password" value="${esc(c.token||'')}" onchange="ghSet('token',this.value)"></label>
+    <label>Token fürs Formular <input type="password" value="${esc(c.ftoken||'')}" onchange="ghSet('ftoken',this.value)"></label></div>
+    <p class="hint">${on?'✓ Der Mitglieder-Link darunter enthält jetzt den Direktversand. Bitte neu kopieren und verteilen. Wer den Link hat, kann den Token auslesen.':'Direktversand im Mitglieder-Link ist aus. Zum Einschalten Repository und „Token fürs Formular“ eintragen.'}</p>
+    <div class="row"><button class="pri" onclick="ghFetch()">Meldungen abholen</button></div></div>`;
+}
+function makeFormLink(){
+  const s=S.settings,c=ghCfg(),o={t:s.formTitel||'',n:s.formNamen?sortedPersons().filter(p=>p.aktiv).map(p=>p.name):[],w:(s.formTel||'').replace(/\D/g,''),m:(s.formMail||'').trim()};
+  if(c.repo&&c.ftoken)o.g={r:c.repo,k:c.ftoken};
+  const bytes=new TextEncoder().encode(JSON.stringify(o));
+  let bin='';bytes.forEach(b=>bin+=String.fromCharCode(b));
+  return location.href.split('#')[0]+'#f='+btoa(bin).replace(/\+/g,'-').replace(/\//g,'_').replace(/=+$/,'');
+}
+function vAbw(){
+  const rows=[...S.absences].sort((a,b)=>a.von.localeCompare(b.von)).map(a=>`<tr><td>${esc(pname(a.personId))}</td><td>${fmt(a.von)}</td><td>${fmt(a.bis)}</td><td class="mut">${esc(a.note||'')}</td><td><button class="x" onclick="delAbw('${a.id}')">✕</button></td></tr>`).join('');
+  return `
+  <div class="card"><h2>Abwesenheit eintragen</h2>
+    <div class="row"><select id="aP">${personOpts('')}</select>
+      <label>von <input type="date" id="aV"></label><label>bis <input type="date" id="aB"></label>
+      <input id="aN" placeholder="Notiz (optional)"><button class="pri" onclick="addAbw()">Eintragen</button></div>
+    <p class="hint">Wer an einem Tag abwesend ist, wird dort nie automatisch eingeteilt. „bis“ leer lassen = nur ein Tag. „Auswärts“-Einträge aus dem Sonntagsprogramm kommen automatisch über den PDF-Import.</p></div>
+  <div class="card"><h2>Meldungen einfügen</h2>
+    <p class="hint">Eingegangene Nachrichten (WhatsApp, E-Mail) hier hineinkopieren. Erkannt werden Zeilen wie <b>Name | 08.11.2026 | 15.11.2026 | Notiz</b> (auch mit Semikolon oder Tabulator, z. B. aus einer Tabelle).</p>
+    <textarea id="abwTxt" rows="5" style="width:100%"></textarea>
+    <p><button class="pri" onclick="abwCheck()">Prüfen</button></p>
+    ${vAbwImp()}</div>
+  ${vGh()}
+  ${vFormLink()}
+  <div class="card"><h2>Abwesenheitsliste</h2>
+    <div class="scroll"><table><tr><th>Person</th><th>von</th><th>bis</th><th>Notiz</th><th></th></tr>${rows||'<tr><td colspan="5" class="mut">Noch keine Einträge.</td></tr>'}</table></div>
+    <p><button onclick="cleanAbw()">Vergangene Abwesenheiten löschen</button></p></div>`;
+}
+
+/* Formular für Mitglieder: Direktversand */
+async function fGh(){
+  if(!fNeed()||ui.fbusy)return;
+  const g=FORM.g;ui.fbusy=true;
+  const names=[...new Set(ui.fe.map(e=>clean(e.name)))].join(', ');
+  try{
+    const r=await fetch('https://api.github.com/repos/'+g.r+'/issues',{method:'POST',headers:ghH(g.k),body:JSON.stringify({title:('Abwesenheit: '+names).slice(0,200),body:fMsg()})});
+    if(r.status===201){ui.fe=[];ui.fok=true;}
+    else alert('Das Senden hat nicht geklappt (Status '+r.status+'). Bitte stattdessen „Nachricht senden“ nutzen und dem Planer Bescheid geben.');
+  }catch(e){alert('Keine Verbindung. Bitte später erneut versuchen oder „Nachricht senden“ nutzen.');}
+  ui.fbusy=false;render();
+}
+function vForm(){
+  const names=Array.isArray(FORM.n)?FORM.n:[],saved=ui.fname||'',g=!!(FORM.g&&FORM.g.r&&FORM.g.k);
+  const nameField=names.length
+    ?`<select id="fN" onchange="$('fN2').style.display=this.value==='__other'?'':'none'"><option value="">– Name wählen –</option>${names.map(n=>`<option ${n===saved?'selected':''}>${esc(n)}</option>`).join('')}<option value="__other">Anderer Name …</option></select> <input id="fN2" placeholder="Name" style="display:none">`
+    :`<input id="fN2" placeholder="Dein Name" value="${esc(saved)}">`;
+  const list=ui.fe.map((e,i)=>`<tr><td>${esc(e.name)}</td><td>${fmtS(e.von)}${e.bis!==e.von?' – '+fmtS(e.bis):''}</td><td class="mut">${esc(e.note)}</td><td><button class="x" onclick="ui.fe.splice(${i},1);render()">✕</button></td></tr>`).join('');
+  return `${ui.fok&&!ui.fe.length?'<div class="card"><h2>✓ Gesendet</h2><p>Danke, deine Meldung ist angekommen. Du kannst weitere Tage eintragen oder das Fenster schließen.</p></div>':''}
+  <div class="card"><h2>Abwesenheit melden</h2>
+    <p class="hint">Trage ein, an welchen Tagen du nicht eingeteilt werden kannst. Du kannst mehrere Einträge sammeln. ${g?'Danach tippst du auf „Absenden“.':'Danach schickst du die fertige Nachricht ab – sie wird nicht automatisch übertragen.'}</p>
+    <div class="row">${nameField}</div>
+    <div class="row"><label>von <input type="date" id="fV"></label><label>bis (optional) <input type="date" id="fB"></label></div>
+    <div class="row"><input id="fT" placeholder="Notiz (optional)" style="flex:1;min-width:200px"><button class="pri" onclick="fAdd()">Zur Liste</button></div></div>
+  ${ui.fe.length?`<div class="card"><h2>Deine Einträge</h2>
+    <table><tr><th>Name</th><th>Zeitraum</th><th>Notiz</th><th></th></tr>${list}</table>
+    <div class="row" style="margin-top:12px">${g?'<button class="pri" onclick="fGh()">Absenden</button>':''}<button class="${g?'':'pri'}" onclick="fShare()">Nachricht senden …</button>${FORM.w?'<button onclick="fWa()">WhatsApp</button>':''}${FORM.m?'<button onclick="fMail()">E-Mail</button>':''}<button onclick="fCopy()">Text kopieren</button></div></div>`:''}`;
+}
+render();
+</script>
 </body>
 </html>
